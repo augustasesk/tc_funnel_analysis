@@ -1,0 +1,304 @@
+-- Query to filter unique events
+
+SELECT *
+  FROM (
+    SELECT
+      event_date_new,
+      event_timestamp,
+      event_name,
+      user_pseudo_id
+    FROM (
+      SELECT
+        PARSE_DATE('%Y%m%d', event_date) AS event_date_new,
+        event_timestamp,
+        event_name,
+        user_pseudo_id,
+        ROW_NUMBER() OVER (PARTITION BY user_pseudo_id, event_name ORDER BY event_timestamp) AS row_no
+      FROM `tc-da-1.turing_data_analytics.raw_events`
+    )
+    WHERE row_no = 1
+    ORDER BY user_pseudo_id
+  ) AS unique_events
+  LEFT JOIN (
+    SELECT *
+    FROM `tc-da-1.turing_data_analytics.raw_events`) AS raw_events
+  USING (event_timestamp, event_name, user_pseudo_id)
+  ORDER BY user_pseudo_id;
+  
+  -- Query to aggregate unique events by top 3 countries
+
+WITH filtered_data AS (
+  SELECT *
+  FROM (
+    SELECT
+      event_date_new,
+      event_timestamp,
+      event_name,
+      user_pseudo_id
+    FROM (
+      SELECT
+        PARSE_DATE('%Y%m%d', event_date) AS event_date_new,
+        event_timestamp,
+        event_name,
+        user_pseudo_id,
+        ROW_NUMBER() OVER (PARTITION BY user_pseudo_id, event_name ORDER BY event_timestamp) AS row_no
+      FROM `tc-da-1.turing_data_analytics.raw_events`
+    )
+    WHERE row_no = 1
+    ORDER BY user_pseudo_id
+  ) AS unique_events
+  LEFT JOIN (
+    SELECT *
+    FROM `tc-da-1.turing_data_analytics.raw_events`) AS raw_events
+  USING (event_timestamp, event_name, user_pseudo_id)
+  ORDER BY user_pseudo_id
+),
+
+top_countries AS (
+  SELECT country
+  FROM (
+    SELECT
+      country,
+      COUNT(event_name) AS event_count,
+      RANK() OVER (ORDER BY COUNT(event_name)) AS country_rank
+    FROM filtered_data
+    GROUP BY country
+  )
+  ORDER BY country_rank DESC
+  LIMIT 3
+)
+
+
+SELECT *
+FROM filtered_data
+RIGHT JOIN top_countries USING(country)
+ORDER BY
+  country,
+  event_timestamp;
+  
+-- Query to calculate numbers for each of top 3 countries for the funnel analysis
+
+WITH filtered_data AS (
+  SELECT *
+  FROM (
+    SELECT
+      event_date_new,
+      event_timestamp,
+      event_name,
+      user_pseudo_id
+    FROM (
+      SELECT
+        PARSE_DATE('%Y%m%d', event_date) AS event_date_new,
+        event_timestamp,
+        event_name,
+        user_pseudo_id,
+        ROW_NUMBER() OVER (PARTITION BY user_pseudo_id, event_name ORDER BY event_timestamp) AS row_no
+      FROM `tc-da-1.turing_data_analytics.raw_events`
+    )
+    WHERE row_no = 1
+    ORDER BY user_pseudo_id
+  ) AS unique_events
+  LEFT JOIN (
+    SELECT *
+    FROM `tc-da-1.turing_data_analytics.raw_events`) AS raw_events
+  USING (event_timestamp, event_name, user_pseudo_id)
+  ORDER BY user_pseudo_id
+),
+
+top_countries AS (
+  SELECT country
+  FROM (
+    SELECT
+      country,
+      COUNT(event_name) AS event_count,
+      RANK() OVER (ORDER BY COUNT(event_name)) AS country_rank
+    FROM filtered_data
+    GROUP BY country
+  )
+  ORDER BY country_rank DESC
+  LIMIT 3
+),
+
+regional_data AS (
+  SELECT *
+  FROM filtered_data
+  RIGHT JOIN top_countries USING(country)
+),
+
+funnel_steps AS (
+  SELECT
+    *,
+    US_events + India_events + Canada_events AS total_events
+  FROM (
+    SELECT
+      CASE
+        WHEN event_name = 'session_start' THEN 1
+        WHEN event_name = 'view_item' THEN 2
+        WHEN event_name = 'add_to_cart' THEN 3
+        WHEN event_name = 'begin_checkout' THEN 4
+        WHEN event_name = 'add_payment_info' THEN 5
+        WHEN event_name = 'purchase' THEN 6
+      END AS event_order,
+      event_name,
+      SUM(CASE WHEN country = 'United States' THEN 1 ELSE 0 END) AS US_events,
+      SUM(CASE WHEN country = 'India' THEN 1 ELSE 0 END) AS India_events,
+      SUM(CASE WHEN country = 'Canada' THEN 1 ELSE 0 END) AS Canada_events,
+    FROM regional_data
+    WHERE event_name IN ('session_start', 'view_item', 'add_to_cart', 'begin_checkout', 'add_payment_info', 'purchase')
+    GROUP BY event_name
+  )
+)
+
+SELECT
+  event_order,
+  event_name,
+  US_events,
+  India_events,
+  Canada_events,
+  FORMAT('%.2f', (total_events / (SELECT total_events FROM funnel_steps WHERE event_order = 1) * 100)) AS full_perc,
+  FORMAT('%.2f', (US_events / (SELECT US_events FROM funnel_steps WHERE event_order = 1) * 100)) AS US_perc_drop,
+  FORMAT('%.2f', (India_events / (SELECT India_events FROM funnel_steps WHERE event_order = 1) * 100)) AS India_perc_drop,
+  FORMAT('%.2f', (Canada_events / (SELECT Canada_events FROM funnel_steps WHERE event_order = 1) * 100)) AS Canada_perc_drop
+FROM funnel_steps
+ORDER BY event_order;
+
+-- Query to collect funnel analysis data based on each operating system
+
+WITH filtered_data AS (
+  SELECT *
+  FROM (
+    SELECT
+      event_date_new,
+      event_timestamp,
+      event_name,
+      user_pseudo_id
+    FROM (
+      SELECT
+        PARSE_DATE('%Y%m%d', event_date) AS event_date_new,
+        event_timestamp,
+        event_name,
+        user_pseudo_id,
+        ROW_NUMBER() OVER (PARTITION BY user_pseudo_id, event_name ORDER BY event_timestamp) AS row_no
+      FROM `tc-da-1.turing_data_analytics.raw_events`
+    )
+    WHERE row_no = 1
+    ORDER BY user_pseudo_id
+  ) AS unique_events
+  LEFT JOIN (
+    SELECT *
+    FROM `tc-da-1.turing_data_analytics.raw_events`) AS raw_events
+  USING (event_timestamp, event_name, user_pseudo_id)
+  ORDER BY user_pseudo_id
+),
+
+funnel_steps AS (
+  SELECT
+    *,
+    Windows_events + Macintosh_events + iOS_events + Android_events + Web_events + Unidentified_events AS total_events
+  FROM (
+    SELECT
+      CASE
+        WHEN event_name = 'session_start' THEN 1
+        WHEN event_name = 'view_item' THEN 2
+        WHEN event_name = 'add_to_cart' THEN 3
+        WHEN event_name = 'begin_checkout' THEN 4
+        WHEN event_name = 'add_payment_info' THEN 5
+        WHEN event_name = 'purchase' THEN 6
+      END AS event_order,
+      event_name,
+      SUM(CASE WHEN operating_system = 'Windows' THEN 1 ELSE 0 END) AS Windows_events,
+      SUM(CASE WHEN operating_system = 'Macintosh' THEN 1 ELSE 0 END) AS Macintosh_events,
+      SUM(CASE WHEN operating_system = 'iOS' THEN 1 ELSE 0 END) AS iOS_events,
+      SUM(CASE WHEN operating_system = 'Android' THEN 1 ELSE 0 END) AS Android_events,
+      SUM(CASE WHEN operating_system = 'Web' THEN 1 ELSE 0 END) AS Web_events,
+      SUM(CASE WHEN operating_system = '<Other>' THEN 1 ELSE 0 END) AS Unidentified_events
+    FROM filtered_data
+    WHERE event_name IN ('session_start', 'view_item', 'add_to_cart', 'begin_checkout', 'add_payment_info', 'purchase')
+    GROUP BY event_name
+  )
+)
+
+SELECT
+  event_order,
+  event_name,
+  Windows_events,
+  Macintosh_events,
+  iOS_events,
+  Android_events,
+  Web_events,
+  Unidentified_events,
+  FORMAT('%.2f', (total_events / (SELECT total_events FROM funnel_steps WHERE event_order = 1) * 100)) AS full_perc,
+  FORMAT('%.2f', (Windows_events / (SELECT Windows_events FROM funnel_steps WHERE event_order = 1) * 100)) AS Windows_perc_drop,
+  FORMAT('%.2f', (Macintosh_events / (SELECT Macintosh_events FROM funnel_steps WHERE event_order = 1) * 100)) AS Macintosh_perc_drop,
+  FORMAT('%.2f', (iOS_events / (SELECT iOS_events FROM funnel_steps WHERE event_order = 1) * 100)) AS iOS_perc_drop,
+  FORMAT('%.2f', (Android_events / (SELECT Android_events FROM funnel_steps WHERE event_order = 1) * 100)) AS Android_perc_drop,
+  FORMAT('%.2f', (Web_events / (SELECT Web_events FROM funnel_steps WHERE event_order = 1) * 100)) AS Web_perc_drop,
+  FORMAT('%.2f', (Unidentified_events / (SELECT Unidentified_events FROM funnel_steps WHERE event_order = 1) * 100)) AS Unidentified_perc_drop
+FROM funnel_steps
+ORDER BY event_order;
+
+-- Query to collect funnel analysis data based on each platform.
+
+WITH filtered_data AS (
+  SELECT *
+  FROM (
+    SELECT
+      event_date_new,
+      event_timestamp,
+      event_name,
+      user_pseudo_id
+    FROM (
+      SELECT
+        PARSE_DATE('%Y%m%d', event_date) AS event_date_new,
+        event_timestamp,
+        event_name,
+        user_pseudo_id,
+        ROW_NUMBER() OVER (PARTITION BY user_pseudo_id, event_name ORDER BY event_timestamp) AS row_no
+      FROM `tc-da-1.turing_data_analytics.raw_events`
+    )
+    WHERE row_no = 1
+    ORDER BY user_pseudo_id
+  ) AS unique_events
+  LEFT JOIN (
+    SELECT *
+    FROM `tc-da-1.turing_data_analytics.raw_events`) AS raw_events
+  USING (event_timestamp, event_name, user_pseudo_id)
+  ORDER BY user_pseudo_id
+),
+
+funnel_steps AS (
+  SELECT
+    *,
+    desktop_events + mobile_events + tablet_events AS total_events
+  FROM (
+    SELECT
+      CASE
+        WHEN event_name = 'session_start' THEN 1
+        WHEN event_name = 'view_item' THEN 2
+        WHEN event_name = 'add_to_cart' THEN 3
+        WHEN event_name = 'begin_checkout' THEN 4
+        WHEN event_name = 'add_payment_info' THEN 5
+        WHEN event_name = 'purchase' THEN 6
+      END AS event_order,
+      event_name,
+      SUM(CASE WHEN category = 'desktop' THEN 1 ELSE 0 END) AS desktop_events,
+      SUM(CASE WHEN category = 'mobile' THEN 1 ELSE 0 END) AS mobile_events,
+      SUM(CASE WHEN category = 'tablet' THEN 1 ELSE 0 END) AS tablet_events
+    FROM filtered_data
+    WHERE event_name IN ('session_start', 'view_item', 'add_to_cart', 'begin_checkout', 'add_payment_info', 'purchase')
+    GROUP BY event_name
+  )
+)
+
+SELECT
+  event_order,
+  event_name,
+  desktop_events,
+  mobile_events,
+  tablet_events,
+  FORMAT('%.2f', (total_events / (SELECT total_events FROM funnel_steps WHERE event_order = 1) * 100)) AS full_perc,
+  FORMAT('%.2f', (desktop_events / (SELECT desktop_events FROM funnel_steps WHERE event_order = 1) * 100)) AS desktop_perc_drop,
+  FORMAT('%.2f', (mobile_events / (SELECT mobile_events FROM funnel_steps WHERE event_order = 1) * 100)) AS mobile_perc_drop,
+  FORMAT('%.2f', (tablet_events / (SELECT tablet_events FROM funnel_steps WHERE event_order = 1) * 100)) AS tablet_perc_drop,
+FROM funnel_steps
+ORDER BY event_order;
